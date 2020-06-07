@@ -63,7 +63,7 @@ object ExerciseOne extends IOApp {
           def free(w: Worker[A, B]): IO[Unit] =
             for {
               ws <- freeWorkers.tryTake
-              _  <- ws.fold(freeWorkers.put(NonEmptyList.of(w)))(ws => freeWorkers.put(w :: ws)).start
+              _  <- ws.fold(freeWorkers.put(NonEmptyList.of(w)))(ws => freeWorkers.put(w :: ws))
             } yield ()
 
           (a: A) =>
@@ -79,7 +79,7 @@ object ExerciseOne extends IOApp {
                   pbR <- putBack.as(w).start
                   wR  <- w(a).start
                   _   <- pbR.join
-                  b   <- wR.join.guarantee(free(w))
+                  b   <- wR.join.guarantee(free(w).start.void)
                 } yield b
               }
         }
