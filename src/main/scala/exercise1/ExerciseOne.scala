@@ -22,11 +22,21 @@ object ExerciseOne extends IOApp {
         .traverse(mkWorker)
         .flatMap(WorkerPool.of)
 
-    testPool
+    val normalProgram = testPool
       .flatMap { pool =>
         List.range(0, 100).traverse(pool.exec(_).start).flatMap(_.traverse(_.join))
       }
       .as(ExitCode.Success)
+
+    val bonusProgram = for {
+      pool <- WorkerPool.of[Unit, Unit](List(_ => IO(println("foo")) >> IO.sleep(2.seconds)))
+      _    <- pool.exec(()).start
+      _    <- pool.removeAllWorkers
+      _    <- pool.exec(())
+    } yield ExitCode.Error
+
+    bonusProgram
+//    normalProgram
   }
 
   // Sample stateful worker that keeps count of requests it has accepted
@@ -47,6 +57,10 @@ object ExerciseOne extends IOApp {
 
   trait WorkerPool[A, B] {
     def exec(a: A): IO[B]
+
+    def add(w: Worker[A, B]): IO[Unit]
+
+    def removeAllWorkers: IO[Unit]
   }
 
   object WorkerPool {
@@ -59,29 +73,48 @@ object ExerciseOne extends IOApp {
     // You are free to use named or anonymous classes
     def of[A, B](fs: List[Worker[A, B]]): IO[WorkerPool[A, B]] =
       validateWorkers(fs).flatMap { workers =>
-        MVar.of[IO, NonEmptyList[Worker[A, B]]](workers).map { freeWorkers =>
-          def free(w: Worker[A, B]): IO[Unit] =
-            for {
-              ws <- freeWorkers.tryTake
-              _  <- ws.fold(freeWorkers.put(NonEmptyList.of(w)))(ws => freeWorkers.put(w :: ws))
-            } yield ()
-
-          (a: A) =>
-            freeWorkers.take
-              .flatMap { ws =>
-                val w = ws.head
-                val putBack = ws.tail match {
-                  case Nil    => IO.unit
-                  case h :: t => freeWorkers.put(NonEmptyList.of(h, t: _*))
-                }
-
-                for {
-                  pbR <- putBack.as(w).start
-                  wR  <- w(a).start
-                  _   <- pbR.join
-                  b   <- wR.join.guarantee(free(w).start.void)
-                } yield b
+        (Ref.of[IO, Boolean](false), MVar.of[IO, NonEmptyList[Worker[A, B]]](workers)).tupled.map {
+          case (emptied, freeWorkers) =>
+            def free(w: Worker[A, B]): IO[Unit] =
+              emptied.get.flatMap {
+                case true => IO.unit
+                case false =>
+                  for {
+                    ws <- freeWorkers.tryTake
+                    _  <- ws.fold(freeWorkers.put(NonEmptyList.of(w)))(ws => freeWorkers.put(w :: ws))
+                  } yield ()
               }
+
+            new WorkerPool[A, B] {
+              override def exec(a: A): IO[B] =
+                freeWorkers.take
+                  .flatMap { ws =>
+                    val w = ws.head
+                    val putBack = ws.tail match {
+                      case Nil    => IO.unit
+                      case h :: t => freeWorkers.put(NonEmptyList.of(h, t: _*))
+                    }
+
+                    for {
+                      pbR <- putBack.as(w).start
+                      wR  <- w(a).start
+                      _   <- pbR.join
+                      b   <- wR.join.guarantee(free(w).start.void)
+                    } yield b
+                  }
+
+              override def add(w: Worker[A, B]): IO[Unit] =
+                for {
+                  ws <- freeWorkers.tryTake
+                  _  <- freeWorkers.put(ws.fold(NonEmptyList.of(w))(ws => w :: ws))
+                } yield ()
+
+              override def removeAllWorkers: IO[Unit] =
+                for {
+                  _ <- emptied.set(true)
+                  _ <- freeWorkers.tryTake
+                } yield ()
+            }
         }
       }
   }
