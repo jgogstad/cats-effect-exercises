@@ -9,7 +9,8 @@ lazy val root = (project in file("."))
   .settings(
     name := "cats-effect-exercises",
     libraryDependencies += scalaTest % Test,
-    libraryDependencies += "org.typelevel" %% "cats-effect" % "2.1.3"
+    libraryDependencies += "org.typelevel" %% "cats-effect" % "2.1.3",
+    addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1")
   )
 
 // See https://www.scala-sbt.org/1.x/docs/Using-Sonatype.html for instructions on how to publish to Sonatype.
